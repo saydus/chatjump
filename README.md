@@ -2,16 +2,16 @@
 
 **Spotlight for your AI chats.** Press <kbd>⌃</kbd><kbd>⌥</kbd><kbd>Space</kbd>, type whatever you remember, and jump straight to the right conversation in Claude, ChatGPT, or Codex.
 
-ChatJump is a small native macOS menu-bar app. It reads the chats open in your desktop apps, and [Jev](https://docs.typesafe.ai) ranks them by meaning, so `uzbek address` finds the thread titled *"Set up US visa application"* because that's what its last message was about.
+ChatJump is a small native macOS menu-bar app. It reads the chats open in your desktop apps, and [Jev](https://docs.typesafe.ai) ranks them by meaning, so `lisbon hotels` finds the thread titled *"Weekend trip ideas"* because that's what its last message was about.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  uzbek address                                       ✦ Jev   │
+│  lisbon hotels                                       ✦ Jev   │
 ├──────────────────────────────────────────────────────────────┤
-│  ◉  Set up US visa application                         100%  │
-│     Codex · 22 hours ago                                     │
-│  ◉  Check Trader MCP access                              0%  │
-│     Codex · 4 hours ago                                      │
+│  ◉  Weekend trip ideas                                  97%  │
+│     Claude · Chat                                            │
+│  ◉  Compare travel credit cards                          2%  │
+│     ChatGPT · Chat                                           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
