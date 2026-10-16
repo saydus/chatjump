@@ -9,7 +9,7 @@ ChatJump is a small native macOS menu-bar app. It reads the chats open in your d
 │  lisbon hotels                                       ✦ Jev   │
 ├──────────────────────────────────────────────────────────────┤
 │  ◉  Weekend trip ideas                                  97%  │
-│     Claude · Chat                                            │
+│     Codex · 2 hours ago                                      │
 │  ◉  Compare travel credit cards                          2%  │
 │     ChatGPT · Chat                                           │
 └──────────────────────────────────────────────────────────────┘
