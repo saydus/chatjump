@@ -12,6 +12,8 @@ final class ChatItem {
     let detail: String
     /// Last user and assistant message, when a local transcript exists.
     var lastExchange: String?
+    /// The local transcript behind this chat, indexed for full-content search.
+    var transcript: (url: URL, format: Transcripts.Format)?
     let recency: Date?
     let open: () -> Void
 
@@ -150,7 +152,11 @@ enum ClaudeDesktopCollector {
         }
         // Code sessions keep transcripts on disk under the same title the sidebar shows.
         let transcripts = Transcripts.claudeByTitle()
-        for item in items { item.lastExchange = transcripts[item.title] }
+        for item in items {
+            guard let t = transcripts[item.title] else { continue }
+            item.lastExchange = t.exchange
+            item.transcript = (t.url, .claude)
+        }
         return items
     }
 }
