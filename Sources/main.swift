@@ -76,6 +76,8 @@ final class Launcher: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTa
     var allItems: [ChatItem] = []
     var shown: [(item: ChatItem, badge: String)] = []
     var jevCache: [String: JevResult] = [:]
+    /// Full-content index over the transcripts behind `allItems`, rebuilt in the background after each reload.
+    var passageIndex: PassageIndex?
     var jevTask: URLSessionTask?
     var debounce: DispatchWorkItem?
     var iconCache: [ChatItem.Source: NSImage] = [:]
@@ -185,6 +187,24 @@ final class Launcher: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTa
                 self.allItems = items
                 self.jevCache = [:]
                 self.refreshResults()
+                self.reindex(items)
+            }
+        }
+    }
+
+    /// Indexes every message of the transcripts behind `items`; only new or changed files are read.
+    func reindex(_ items: [ChatItem]) {
+        let transcripts = items.compactMap(\.transcript)
+        let previous = passageIndex
+        collectQueue.async {
+            let signature = PassageIndex.signature(transcripts)
+            guard previous?.signature != signature else { return }
+            let index = PassageIndex(transcripts: transcripts, signature: signature)
+            DispatchQueue.main.async {
+                guard self.allItems.first === items.first else { return }   // a newer reload has landed
+                self.passageIndex = index
+                self.jevCache = [:]
+                if !self.field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty { self.refreshResults() }
             }
         }
     }
@@ -205,11 +225,15 @@ final class Launcher: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTa
             render(); return
         }
 
-        let scored: [(ChatItem, Double)] = allItems.map { ($0, LocalRanker.score($0, query: q)) }
-            .sorted { a, b in
-                if a.1 != b.1 { return a.1 > b.1 }
-                return (a.0.recency ?? .distantFuture) > (b.0.recency ?? .distantFuture)
-            }
+        // Title keywords plus how much of the query the chat's best transcript passage covers.
+        let hits = passageIndex?.hits(for: allItems, query: q) ?? allItems.map { _ in nil }
+        let scored: [(ChatItem, Double, PassageIndex.Hit?)] = zip(allItems, hits).map { item, hit in
+            (item, LocalRanker.score(item, query: q) + PassageIndex.localWeight * (hit?.coverage ?? 0), hit)
+        }
+        .sorted { a, b in
+            if a.1 != b.1 { return a.1 > b.1 }
+            return (a.0.recency ?? .distantFuture) > (b.0.recency ?? .distantFuture)
+        }
 
         if let cached = jevCache[q] { applyJev(cached, candidates: scored.map(\.0)); return }
 
@@ -219,9 +243,11 @@ final class Launcher: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTa
         guard JevRanker.apiKey != nil else { status.stringValue = "no Jev key: keywords"; return }
         status.stringValue = "Jev…"
         let candidates = scored.map(\.0)
-        let keywordScores = scored.map(\.1)
+        let keywordScores = scored.map { LocalRanker.score($0.0, query: q) }
+        let passages = PassageIndex.forRequest(Array(scored.prefix(255).map(\.2)))
         let work = DispatchWorkItem { [weak self] in
-            self?.jevTask = JevRanker.rank(query: q, candidates: candidates, keywordScores: keywordScores) { result in
+            self?.jevTask = JevRanker.rank(query: q, candidates: candidates, keywordScores: keywordScores,
+                                           passages: passages) { result in
                 DispatchQueue.main.async {
                     guard let self, let result else { self?.status.stringValue = "Jev unavailable"; return }
                     self.jevCache[q] = result

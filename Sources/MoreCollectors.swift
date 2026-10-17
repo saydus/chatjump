@@ -25,7 +25,10 @@ enum CodexCollector {
                 let item = ChatItem(source: .codex, title: String(v.name.prefix(140)), detail: relative(v.updated), recency: v.updated) {
                     if let url = URL(string: "codex://threads/\(id)") { NSWorkspace.shared.open(url) }
                 }
-                item.lastExchange = rollouts[id].flatMap { Transcripts.lastExchange(in: $0, format: .codex) }
+                if let file = rollouts[id] {
+                    item.lastExchange = Transcripts.lastExchange(in: file, format: .codex)
+                    item.transcript = (file, .codex)
+                }
                 return item
             }
     }
@@ -46,16 +49,16 @@ enum Transcripts {
     private static let lock = NSLock()
 
     /// Claude Code transcripts keyed by session title, so Claude sidebar sessions can be matched to their contents.
-    static func claudeByTitle(maxAgeDays: Double = 30) -> [String: String] {
+    static func claudeByTitle(maxAgeDays: Double = 30) -> [String: (url: URL, exchange: String)] {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
         let cutoff = Date().addingTimeInterval(-maxAgeDays * 86400)
-        var out: [String: (Date, String)] = [:]
+        var out: [String: (Date, URL, String)] = [:]
         for file in jsonlFiles(under: root, depth: 2) where file.1 > cutoff {
             let (title, exchange) = read(file.0, mtime: file.1, format: .claude)
             guard let title, let exchange else { continue }
-            if (out[title]?.0 ?? .distantPast) < file.1 { out[title] = (file.1, exchange) }
+            if (out[title]?.0 ?? .distantPast) < file.1 { out[title] = (file.1, file.0, exchange) }
         }
-        return out.mapValues(\.1)
+        return out.mapValues { ($0.1, $0.2) }
     }
 
     /// Codex rollout files keyed by thread id (the id ends each file name).
@@ -102,6 +105,65 @@ enum Transcripts {
         let exchange = parts.isEmpty ? nil : parts.joined(separator: "\n")
         cache[file.path] = (mtime, title, exchange)
         return (title, exchange)
+    }
+
+    /// Every user and assistant message in a transcript, cut into ~400-character passages for full-content search.
+    /// Only the bytes appended since the last call are parsed, so a growing session costs little to keep current.
+    static func passages(in file: URL, format: Format) -> [Passage] {
+        let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        lock.lock(); defer { lock.unlock() }
+        var entry = fullCache[file.path] ?? FullEntry(mtime: .distantPast, offset: 0, passages: [])
+        if entry.mtime == mtime { return entry.passages }
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return entry.passages }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        if size < entry.offset { entry = FullEntry(mtime: .distantPast, offset: 0, passages: []) }   // file was rewritten
+        try? handle.seek(toOffset: entry.offset)
+        let data = handle.readDataToEndOfFile()
+
+        // Cheap byte checks pick out message lines so tool calls, tool output and metadata never reach the JSON parser.
+        let needles: [[UInt8]] = format == .claude
+            ? [#""type":"assistant""#, #""type":"text""#, #""type":"user""#, #""tool_use_id""#, #""isSidechain":true"#].map { Array($0.utf8) }
+            : [#""type":"response_item""#, #""type":"message""#].map { Array($0.utf8) }
+        var consumed = 0
+        data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+            guard let base = buf.baseAddress else { return }
+            var start = 0
+            while start < buf.count, let nl = memchr(base + start, 0x0A, buf.count - start) {
+                let end = base.distance(to: UnsafeRawPointer(nl))
+                defer { start = end + 1; consumed = start }
+                let line = UnsafeRawBufferPointer(rebasing: buf[start..<end])
+                func has(_ i: Int) -> Bool { contains(line, needles[i]) }
+                let wanted = format == .claude
+                    ? !has(4) && ((has(0) && has(1)) || (has(2) && !has(3)))
+                    : has(0) && has(1)
+                guard wanted, let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+                var role: String?, text: String?
+                switch format {
+                case .claude:
+                    role = obj["type"] as? String
+                    text = typedText((obj["message"] as? [String: Any])?["content"])
+                case .codex:
+                    guard let p = obj["payload"] as? [String: Any], p["type"] as? String == "message" else { continue }
+                    role = p["role"] as? String
+                    text = typedText(p["content"])
+                }
+                guard let role, role == "user" || role == "assistant", let text else { continue }
+                entry.passages += Passage.cut(text, label: role == "user" ? "User: " : "Assistant: ")
+            }
+        }
+        entry.offset += UInt64(consumed)
+        entry.mtime = mtime
+        fullCache[file.path] = entry
+        return entry.passages
+    }
+
+    private struct FullEntry { var mtime: Date; var offset: UInt64; var passages: [Passage] }
+    private static var fullCache: [String: FullEntry] = [:]
+
+    private static func contains(_ hay: UnsafeRawBufferPointer, _ needle: [UInt8]) -> Bool {
+        guard let base = hay.baseAddress, hay.count >= needle.count else { return false }
+        return needle.withUnsafeBytes { memmem(base, hay.count, $0.baseAddress, needle.count) != nil }
     }
 
     /// Text a person or the assistant wrote, skipping injected context, tool output and system blocks.
