@@ -22,19 +22,18 @@ enum CodexCollector {
         return latest.filter { $0.value.updated > cutoff }
             .sorted { $0.value.updated > $1.value.updated }
             .map { id, v in
-                let item = ChatItem(source: .codex, title: String(v.name.prefix(140)), detail: relative(v.updated), recency: v.updated) {
+                let item = ChatItem(source: .codex, title: String(v.name.prefix(140)), detail: "Thread", recency: v.updated) {
                     if let url = URL(string: "codex://threads/\(id)") { NSWorkspace.shared.open(url) }
                 }
                 if let file = rollouts[id] {
-                    item.lastExchange = Transcripts.lastExchange(in: file, format: .codex)
+                    let tail = Transcripts.tail(of: file, format: .codex)
+                    item.lastExchange = tail.exchange
+                    // The index updates on renames too; the last message stamp is when the chat was really active.
+                    item.recency = tail.lastAt ?? v.updated
                     item.transcript = (file, .codex)
                 }
                 return item
             }
-    }
-
-    static func relative(_ d: Date) -> String {
-        RelativeDateTimeFormatter().localizedString(for: d, relativeTo: Date())
     }
 }
 
@@ -45,20 +44,24 @@ enum CodexCollector {
 enum Transcripts {
     enum Format { case claude, codex }
 
-    private static var cache: [String: (Date, String?, String?)] = [:]   // path -> (mtime, title, last exchange)
+    /// path -> (mtime, what the file holds)
+    private static var cache: [String: (Date, Tail)] = [:]
+
+    /// What the end of a transcript says: its title, its last exchange, and when that last message was sent.
+    struct Tail { var title: String?; var exchange: String?; var lastAt: Date? }
     private static let lock = NSLock()
 
     /// Claude Code transcripts keyed by session title, so Claude sidebar sessions can be matched to their contents.
-    static func claudeByTitle(maxAgeDays: Double = 30) -> [String: (url: URL, exchange: String)] {
+    static func claudeByTitle(maxAgeDays: Double = 30) -> [String: (url: URL, exchange: String, lastAt: Date?)] {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
         let cutoff = Date().addingTimeInterval(-maxAgeDays * 86400)
-        var out: [String: (Date, URL, String)] = [:]
+        var out: [String: (Date, URL, String, Date?)] = [:]
         for file in jsonlFiles(under: root, depth: 2) where file.1 > cutoff {
-            let (title, exchange) = read(file.0, mtime: file.1, format: .claude)
-            guard let title, let exchange else { continue }
-            if (out[title]?.0 ?? .distantPast) < file.1 { out[title] = (file.1, file.0, exchange) }
+            let tail = read(file.0, mtime: file.1, format: .claude)
+            guard let title = tail.title, let exchange = tail.exchange else { continue }
+            if (out[title]?.0 ?? .distantPast) < file.1 { out[title] = (file.1, file.0, exchange, tail.lastAt) }
         }
-        return out.mapValues { ($0.1, $0.2) }
+        return out.mapValues { ($0.1, $0.2, $0.3) }
     }
 
     /// Codex rollout files keyed by thread id (the id ends each file name).
@@ -72,21 +75,23 @@ enum Transcripts {
         return out
     }
 
-    static func lastExchange(in file: URL, format: Format) -> String? {
+    static func tail(of file: URL, format: Format) -> Tail {
         let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-        return read(file, mtime: mtime, format: format).1
+        return read(file, mtime: mtime, format: format)
     }
 
-    private static func read(_ file: URL, mtime: Date, format: Format) -> (String?, String?) {
+    private static func read(_ file: URL, mtime: Date, format: Format) -> Tail {
         lock.lock(); defer { lock.unlock() }
-        if let hit = cache[file.path], hit.0 == mtime { return (hit.1, hit.2) }
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return (nil, nil) }
+        if let hit = cache[file.path], hit.0 == mtime { return hit.1 }
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return Tail() }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
         try? handle.seek(toOffset: size > 400_000 ? size - 400_000 : 0)
         let text = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
 
-        var title: String?, lastUser: String?, lastAssistant: String?
+        var title: String?, lastUser: String?, lastAssistant: String?, lastAt: Date?
+        // Both formats stamp every line; the stamp on the last message line is when the chat was last active.
+        func stamp(_ obj: [String: Any]) { if let t = (obj["timestamp"] as? String).flatMap(isoDate) { lastAt = t } }
         for line in text.split(separator: "\n") {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
             switch format {
@@ -94,17 +99,20 @@ enum Transcripts {
                 if let t = obj["customTitle"] as? String { title = t }
                 guard let role = obj["type"] as? String, role == "user" || role == "assistant",
                       let msg = obj["message"] as? [String: Any], let s = typedText(msg["content"]) else { continue }
+                stamp(obj)
                 if role == "user" { lastUser = s } else { lastAssistant = s }
             case .codex:
                 guard let p = obj["payload"] as? [String: Any], p["type"] as? String == "message",
                       let role = p["role"] as? String, let s = typedText(p["content"]) else { continue }
+                stamp(obj)
                 if role == "user" { lastUser = s } else if role == "assistant" { lastAssistant = s }
             }
         }
         let parts = [lastUser.map { "User: " + $0.prefix(300) }, lastAssistant.map { "Assistant: " + $0.prefix(450) }].compactMap { $0 }
         let exchange = parts.isEmpty ? nil : parts.joined(separator: "\n")
-        cache[file.path] = (mtime, title, exchange)
-        return (title, exchange)
+        let tail = Tail(title: title, exchange: exchange, lastAt: lastAt)
+        cache[file.path] = (mtime, tail)
+        return tail
     }
 
     /// Every user and assistant message in a transcript, cut into ~400-character passages for full-content search.
@@ -193,5 +201,45 @@ enum Transcripts {
             out.append((url, (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast))
         }
         return out
+    }
+}
+
+private let isoFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+/// Parses transcript timestamps, with or without fractional seconds.
+func isoDate(_ s: String) -> Date? {
+    isoFormatter.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+}
+
+// MARK: - How long ago
+
+enum Ago {
+    /// Compact form for the result list: "now", "5m", "3h", "yesterday", "4d", "Oct 3".
+    static func short(_ date: Date, now: Date = Date()) -> String {
+        let s = now.timeIntervalSince(date)
+        if s < 60 { return "just now" }
+        if s < 3600 { return "\(Int(s / 60))m ago" }
+        if Calendar.current.isDateInToday(date) { return "\(Int(s / 3600))h ago" }
+        if Calendar.current.isDateInYesterday(date) { return "yesterday" }
+        if s < 7 * 86400 { return "\(Int(s / 86400))d ago" }
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate(Calendar.current.isDate(date, equalTo: now, toGranularity: .year) ? "MMM d" : "MMM d yyyy")
+        return f.string(from: date)
+    }
+
+    /// Full form for Jev: "3 hours ago (Thu Oct 23, 14:05)", so both "recent" and "on Monday" can be judged.
+    static func long(_ date: Date, now: Date = Date()) -> String {
+        "\(RelativeDateTimeFormatter().localizedString(for: date, relativeTo: now)) (\(stamp(date)))"
+    }
+
+    static func stamp(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE MMM d, HH:mm"
+        return f.string(from: date)
     }
 }

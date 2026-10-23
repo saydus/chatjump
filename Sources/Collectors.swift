@@ -14,7 +14,8 @@ final class ChatItem {
     var lastExchange: String?
     /// The local transcript behind this chat, indexed for full-content search.
     var transcript: (url: URL, format: Transcripts.Format)?
-    let recency: Date?
+    /// When the last message in the chat was sent, when a source knows it.
+    var recency: Date?
     let open: () -> Void
 
     init(source: Source, title: String, detail: String, recency: Date? = nil, open: @escaping () -> Void) {
@@ -155,6 +156,7 @@ enum ClaudeDesktopCollector {
         for item in items {
             guard let t = transcripts[item.title] else { continue }
             item.lastExchange = t.exchange
+            item.recency = t.lastAt
             item.transcript = (t.url, .claude)
         }
         return items

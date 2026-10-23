@@ -25,6 +25,31 @@ final class HotKey {
 final class LauncherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    /// Called for ⌘C when the search box has no text selected; returns true if it copied something.
+    var copyWithoutSelection: (() -> Bool)?
+
+    /// A menu-bar app has no Edit menu, so nothing routes ⌘X/C/V/A/Z to the search box. Route them here.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard mods == .command || mods == [.command, .shift], let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return super.performKeyEquivalent(with: event)
+        }
+        let shift = mods.contains(.shift)
+        let action: Selector? = switch (key, shift) {
+        case ("x", false): #selector(NSText.cut(_:))
+        case ("c", false): #selector(NSText.copy(_:))
+        case ("v", false): #selector(NSText.paste(_:))
+        case ("a", false): #selector(NSText.selectAll(_:))
+        case ("z", false): Selector(("undo:"))
+        case ("z", true): Selector(("redo:"))
+        default: nil
+        }
+        guard let action else { return super.performKeyEquivalent(with: event) }
+        if key == "c", let editor = firstResponder as? NSTextView, editor.selectedRange().length == 0,
+           copyWithoutSelection?() == true { return true }
+        return NSApp.sendAction(action, to: nil, from: self)
+    }
 }
 
 final class ResultCell: NSTableCellView {
@@ -95,6 +120,7 @@ final class Launcher: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTa
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.isMovableByWindowBackground = true
         panel.delegate = self
+        panel.copyWithoutSelection = { [weak self] in self?.copySelectedChat() ?? false }
 
         let bg = NSVisualEffectView()
         bg.material = .popover
@@ -310,6 +336,16 @@ final class Launcher: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTa
         DispatchQueue.main.async { item.open() }
     }
 
+    /// ⌘C with nothing selected in the search box copies the highlighted chat's title.
+    func copySelectedChat() -> Bool {
+        let r = table.selectedRow
+        guard r >= 0, r < shown.count else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(shown[r].item.title, forType: .string)
+        status.stringValue = "copied title"
+        return true
+    }
+
     // MARK: table
 
     func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
@@ -320,7 +356,9 @@ final class Launcher: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTa
         let (item, badge) = shown[row]
         cell.icon.image = icon(for: item.source)
         cell.title.stringValue = item.title
-        cell.subtitle.stringValue = "\(item.source.rawValue) · \(item.detail)"
+        // Time since the last message, worked out at draw time so it stays current while the panel is open.
+        let when = item.recency.map { "last message \(Ago.short($0))" }
+        cell.subtitle.stringValue = [item.source.rawValue, when, item.detail].compactMap { $0 }.joined(separator: " · ")
         cell.badge.stringValue = badge
         return cell
     }

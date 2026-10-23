@@ -186,6 +186,7 @@ enum JevRanker {
 
     /// Ranks up to 255 candidates (the Choice option limit) against the query in one request.
     /// Each chat carries its title, its last exchange and best-matching passage when a transcript exists,
+    /// when its last message was sent (so queries like "yesterday" work),
     /// and the local keyword score as a hint.
     static func rank(query: String, candidates: [ChatItem], keywordScores: [Double], passages: [String?],
                      completion: @escaping (JevResult?) -> Void) -> URLSessionTask? {
@@ -198,15 +199,16 @@ enum JevRanker {
                                        "keyword_overlap": keywordOverlap(i < keywordScores.count ? keywordScores[i] : 0)]
             if let last = c.lastExchange { chat["last_exchange"] = last }
             if i < passages.count, let passage = passages[i] { chat["best_passage"] = passage }
+            if let when = c.recency { chat["last_activity"] = Ago.long(when) }
             return chat
         }
-        let state: [String: Any] = ["chats": chats]
+        let state: [String: Any] = ["now": Ago.stamp(Date()), "chats": chats]
         let typed: [String: Any] = ["query": query]
         let questions: [String: Any] = [
             "best": [
                 "type": "choice",
                 "instructions": typed.merging([
-                    "question": "The user typed `query` into a quick launcher to jump back to one of their open AI chats in Claude, ChatGPT or Codex, listed in `chats`. The query may be loose keywords, fragments, a topic, a name, or misspelled. Judge each chat by what it is about: its `title`, its `last_exchange` (the latest user and assistant messages) when present, and its `best_passage` when present: the passage from anywhere earlier in that conversation that best matches the query words, so a chat can be the right one because of something said mid-conversation even when its title and last exchange are about something else. `keyword_overlap` says how many query words literally appear in the title; treat it as a hint, not the answer. Which chat id is the conversation they most likely want?"
+                    "question": "The user typed `query` into a quick launcher to jump back to one of their open AI chats in Claude, ChatGPT or Codex, listed in `chats`. The query may be loose keywords, fragments, a topic, a name, or misspelled. Judge each chat by what it is about: its `title`, its `last_exchange` (the latest user and assistant messages) when present, and its `best_passage` when present: the passage from anywhere earlier in that conversation that best matches the query words, so a chat can be the right one because of something said mid-conversation even when its title and last exchange are about something else. `keyword_overlap` says how many query words literally appear in the title; treat it as a hint, not the answer. `last_activity`, when present, says when the chat's last message was sent, relative to `now`: when the query refers to time (today, yesterday, last week, on Monday, latest, recent, old), prefer chats whose `last_activity` fits it; otherwise use it only to break near-ties in favor of more recent chats. Which chat id is the conversation they most likely want?"
                 ]) { $1 },
                 "criteria": Dictionary(uniqueKeysWithValues: pool.indices.map { (id($0), NSNull()) }),
             ],

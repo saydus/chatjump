@@ -9,7 +9,7 @@ ChatJump is a small native macOS menu-bar app. It reads the chats open in your d
 │  lisbon hotels                                       ✦ Jev   │
 ├──────────────────────────────────────────────────────────────┤
 │  ◉  Weekend trip ideas                                  97%  │
-│     Codex · 2 hours ago                                      │
+│     Codex · last message 2h ago · Thread                     │
 │  ◉  Compare travel credit cards                          2%  │
 │     ChatGPT · Chat                                           │
 └──────────────────────────────────────────────────────────────┘
@@ -31,7 +31,7 @@ Picking a result opens it: ChatJump clicks the sidebar row, opens `codex://threa
 ## How ranking works
 
 1. **As you type**, a local keyword matcher shows results instantly. For chats with a transcript, a local BM25 search over ~400-character passages finds the one passage per chat that best matches the query (in about a millisecond), and how much of the query it covers adds to that chat's score.
-2. **When you pause** (about 0.3 s), ChatJump sends one request to Jev with every open chat: its title, its last exchange when there is one, its best passage (for the 40 chats whose passages match best), and a coarse keyword-overlap hint.
+2. **When you pause** (about 0.3 s), ChatJump sends one request to Jev with every open chat: its title, its last exchange when there is one, its best passage (for the 40 chats whose passages match best), when its last message was sent, and a coarse keyword-overlap hint. The time lets queries like `yesterday`, `latest` or `a few weeks ago` find the right chat, and breaks near-ties in favor of recent chats.
 3. Jev answers two questions in that request:
    - a **Choice** over the chat ids, whose probabilities become the ranking (the percentages you see), and
    - a **Noul** asking whether *any* chat matches, which drives the "weak match" label when nothing does.
@@ -65,12 +65,16 @@ cd chatjump && ./build.sh
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move through results |
 | <kbd>Return</kbd> | Open the selected chat |
 | <kbd>Esc</kbd> | Close |
+| <kbd>⌘</kbd><kbd>V</kbd> <kbd>⌘</kbd><kbd>C</kbd> <kbd>⌘</kbd><kbd>X</kbd> <kbd>⌘</kbd><kbd>A</kbd> <kbd>⌘</kbd><kbd>Z</kbd> | Paste, copy, cut, select all and undo in the search box. Paste a snippet from a chat to find that chat. |
+| <kbd>⌘</kbd><kbd>C</kbd> with nothing selected | Copy the highlighted chat's title |
 
 With an empty query you see every open chat, in sidebar order for Claude and ChatGPT and by recency for Codex.
 
+Each result shows how long ago its last message was sent (`last message 3h ago`), when ChatJump can tell: for Claude Code sessions and Codex threads it reads the timestamp of the last message in the transcript. ChatGPT and claude.ai chats don't store messages on your Mac, so they show no time.
+
 ## Privacy
 
-Everything runs locally except the ranking call. When Jev is enabled, each search sends your query and, for every open chat, its **title, app name, and last user and assistant messages** (truncated to roughly 750 characters) to `api.typesafe.ai`. For up to 40 Claude Code and Codex chats it also sends the **one passage of about 400 characters** that best matches the query. That passage can come from anywhere in the conversation, so it may include something said long ago. Full transcripts are searched on your Mac and never sent; the index is kept in memory only. Nothing else leaves your Mac, and nothing is stored by ChatJump beyond the API key file.
+Everything runs locally except the ranking call. When Jev is enabled, each search sends your query and, for every open chat, its **title, app name, last user and assistant messages** (truncated to roughly 750 characters) **and the time of its last message** to `api.typesafe.ai`. For up to 40 Claude Code and Codex chats it also sends the **one passage of about 400 characters** that best matches the query. That passage can come from anywhere in the conversation, so it may include something said long ago. Full transcripts are searched on your Mac and never sent; the index is kept in memory only. Nothing else leaves your Mac, and nothing is stored by ChatJump beyond the API key file.
 
 If that's more than you want to share, leave the key unset and ChatJump uses local keyword matching only.
 
